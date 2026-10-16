@@ -31,9 +31,10 @@ jobs:
           unzip -q BeatVerse-source.zip -d src
 
           echo "=== Repo preview ==="
-          find src -maxdepth 4 -type d -print | sed -n '1,200p' || true
+          find src -maxdepth 6 -type d -print | sed -n '1,300p' || true
 
-          mapfile -t PUBS < <(find src -type f -name pubspec.yaml 2>/dev/null || true)
+          # collect pubspec.yaml paths robustly and strip CRLF
+          mapfile -t PUBS < <(find src -type f -name pubspec.yaml -print0 2>/dev/null | xargs -0 -n1 printf '%s\n' | sed 's/\r$//')
 
           if [ ${#PUBS[@]} -eq 0 ]; then
             echo "pubspec.yaml not found in zip"
@@ -48,14 +49,28 @@ jobs:
 
           for PUB in "${PUBS[@]}"; do
             DIR="$(dirname "$PUB")"
+            DIR="$(echo "$DIR" | sed 's/\r$//')"
 
-            if [ -n "$ENTRYPOINT" ] && [ -f "$DIR/$ENTRYPOINT" ]; then
-              CANDIDATES+=("$DIR")
+            # canonicalize; -m tolerates odd paths but produces a sane path
+            DIR_CANON="$(realpath -m "$DIR" 2>/dev/null || true)"
+            if [ -z "$DIR_CANON" ]; then
+              DIR_CANON="$DIR"
+            fi
+
+            if [ ! -d "$DIR_CANON" ]; then
+              echo "Skipping pubspec at '$PUB' because directory does not exist: '$DIR_CANON'"
               continue
             fi
 
-            if [ -f "$DIR/lib/main.dart" ] || [ -d "$DIR/android" ] || [ -d "$DIR/ios" ]; then
-              CANDIDATES+=("$DIR")
+            if [ -n "$ENTRYPOINT" ] && [ -f "$DIR_CANON/$ENTRYPOINT" ]; then
+              CANDIDATES+=("$DIR_CANON")
+              continue
+            fi
+
+            if [ -f "$DIR_CANON/lib/main.dart" ] || [ -d "$DIR_CANON/android" ] || [ -d "$DIR_CANON/ios" ]; then
+              CANDIDATES+=("$DIR_CANON")
+            else
+              echo "Skipping '$DIR_CANON': no lib/main.dart and no android/ios directory"
             fi
           done
 
@@ -63,6 +78,8 @@ jobs:
             echo "No valid Flutter app directory found in zip."
             echo "Available pubspecs:"
             for p in "${PUBS[@]}"; do echo " - $p"; done
+            echo "Repo tree (top-level):"
+            find src -maxdepth 3 -print | sed -n '1,200p' || true
             exit 1
           fi
 
@@ -82,6 +99,8 @@ jobs:
 
           if [ ! -d "$CHOSEN" ]; then
             echo "Selected app directory does not exist: $CHOSEN"
+            echo "Candidates were:"
+            for c in "${CANDIDATES[@]}"; do echo " - $c"; done
             exit 1
           fi
 
