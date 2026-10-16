@@ -37,6 +37,13 @@ jobs:
 
           grep -rn "applicationId" android/app/build.gradle* || true
 
+      - name: Fix Gradle version
+        working-directory: app
+        run: |
+          sed -i -E 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
+          cat android/gradle/wrapper/gradle-wrapper.properties
+          grep -n "com.android" android/settings.gradle* || true
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
