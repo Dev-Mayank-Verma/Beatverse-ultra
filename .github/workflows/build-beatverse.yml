@@ -2,6 +2,11 @@ name: Build BeatVerse APK
 
 on:
   workflow_dispatch:
+    inputs:
+      flutter_version:
+        description: "Flutter version (try 3.35.7, if it fails try 3.32.8)"
+        default: "3.35.7"
+        required: true
 
 env:
   UPSTREAM_REPO: https://github.com/HemantKArya/BloomeeTunes.git
@@ -37,13 +42,6 @@ jobs:
 
           grep -rn "applicationId" android/app/build.gradle* || true
 
-      - name: Fix Gradle version
-        working-directory: app
-        run: |
-          sed -i -E 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
-          cat android/gradle/wrapper/gradle-wrapper.properties
-          grep -n "com.android" android/settings.gradle* || true
-
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -53,6 +51,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{ github.event.inputs.flutter_version }}
           channel: stable
           cache: true
 
@@ -64,7 +63,7 @@ jobs:
 
       - name: Build release APK
         working-directory: app
-        run: flutter build apk --release --android-skip-build-dependency-validation
+        run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
