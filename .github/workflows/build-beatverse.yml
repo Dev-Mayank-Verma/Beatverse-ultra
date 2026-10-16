@@ -23,66 +23,76 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Extract source zip and choose app directory
+        shell: bash
         run: |
           set -euo pipefail
+
+          rm -rf src
           unzip -q BeatVerse-source.zip -d src
 
-          echo "=== Quick repo preview (top-level under src) ==="
-          find src -maxdepth 3 -type d -print | sed -n '1,200p' || true
+          echo "=== Repo preview ==="
+          find src -maxdepth 4 -type d -print | sed -n '1,200p' || true
 
-          # Find all pubspecs
-          mapfile -t PUBS < <(find src -maxdepth 6 -name pubspec.yaml || true)
-          test ${#PUBS[@]} -gt 0 || { echo "pubspec.yaml not found in zip"; exit 1; }
+          mapfile -t PUBS < <(find src -type f -name pubspec.yaml 2>/dev/null || true)
+
+          if [ ${#PUBS[@]} -eq 0 ]; then
+            echo "pubspec.yaml not found in zip"
+            exit 1
+          fi
 
           echo "Found pubspecs:"
           for p in "${PUBS[@]}"; do echo " - $p"; done
 
-          echo "Searching for candidate main.dart files..."
-          mapfile -t MAINS < <(find src -maxdepth 6 -type f -name 'main*.dart' || true)
-          for m in "${MAINS[@]}"; do echo " - $m"; done
+          ENTRYPOINT="${{ github.event.inputs.entrypoint || '' }}"
+          CANDIDATES=()
 
-          # Prefer explicit entrypoint if provided via workflow_dispatch
-          ENTRYPOINT="${{ github.event.inputs.entrypoint }}"
-
-          CHOSEN=""
           for PUB in "${PUBS[@]}"; do
-            DIR=$(dirname "$PUB")
+            DIR="$(dirname "$PUB")"
 
-            # If user provided entrypoint, check it first inside this project
-            if [ -n "$ENTRYPOINT" ]; then
-              if [ -f "$DIR/$ENTRYPOINT" ]; then
-                CHOSEN="$DIR"
-                echo "Choosing project $DIR because it contains the requested entrypoint $ENTRYPOINT"
-                break
-              fi
+            if [ -n "$ENTRYPOINT" ] && [ -f "$DIR/$ENTRYPOINT" ]; then
+              CANDIDATES+=("$DIR")
+              continue
             fi
 
-            # Typical Flutter app indicators
             if [ -f "$DIR/lib/main.dart" ] || [ -d "$DIR/android" ] || [ -d "$DIR/ios" ]; then
-              CHOSEN="$DIR"
-              echo "Choosing project $DIR (contains lib/main.dart or android/ios folder)"
-              break
-            fi
-
-            # Some repos put runnable app under example/
-            if [ -f "$DIR/example/lib/main.dart" ] || [ -d "$DIR/example/android" ]; then
-              CHOSEN="$DIR/example"
-              echo "Choosing example project $CHOSEN"
-              break
+              CANDIDATES+=("$DIR")
             fi
           done
 
+          if [ ${#CANDIDATES[@]} -eq 0 ]; then
+            echo "No valid Flutter app directory found in zip."
+            echo "Available pubspecs:"
+            for p in "${PUBS[@]}"; do echo " - $p"; done
+            exit 1
+          fi
+
+          CHOSEN=""
+          if [ -n "$ENTRYPOINT" ]; then
+            for DIR in "${CANDIDATES[@]}"; do
+              if [ -f "$DIR/$ENTRYPOINT" ]; then
+                CHOSEN="$DIR"
+                break
+              fi
+            done
+          fi
+
           if [ -z "$CHOSEN" ]; then
-            echo "No obvious Flutter app found in any pubspec; falling back to first pubspec"
-            CHOSEN=$(dirname "${PUBS[0]}")
+            CHOSEN="${CANDIDATES[0]}"
+          fi
+
+          if [ ! -d "$CHOSEN" ]; then
+            echo "Selected app directory does not exist: $CHOSEN"
+            exit 1
           fi
 
           echo "APP_DIR=$CHOSEN" >> "$GITHUB_ENV"
           echo "ENTRYPOINT=$ENTRYPOINT" >> "$GITHUB_ENV"
           echo "Project root chosen: $CHOSEN"
-          echo "Listing chosen project files:"
-          ls -la "$CHOSEN" || true
-          if command -v tree >/dev/null 2>&1; then tree -a "$CHOSEN" | sed -n '1,200p'; fi
+
+          ls -la "$CHOSEN"
+          if command -v tree >/dev/null 2>&1; then
+            tree -a "$CHOSEN" | sed -n '1,200p'
+          fi
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -107,7 +117,12 @@ jobs:
         working-directory: ${{ env.APP_DIR }}
         run: |
           set -euo pipefail
-          # If user specified an entrypoint, ensure it exists relative to APP_DIR
+
+          if [ ! -d "${{ env.APP_DIR }}" ]; then
+            echo "APP_DIR is invalid: ${{ env.APP_DIR }}"
+            exit 1
+          fi
+
           if [ -n "${{ env.ENTRYPOINT }}" ]; then
             if [ ! -f "${{ env.APP_DIR }}/${{ env.ENTRYPOINT }}" ]; then
               echo "ERROR: Requested entrypoint '${{ env.ENTRYPOINT }}' not found in ${{ env.APP_DIR }}"
@@ -117,16 +132,15 @@ jobs:
             echo "Using custom entrypoint: ${{ env.ENTRYPOINT }}"
             TARGET="--target ${{ env.ENTRYPOINT }}"
           else
-            # default entrypoint must exist
-            if [ -f "${{ env.APP_DIR }}/lib/main.dart" ]; then
-              TARGET=""
-              echo "Using default entrypoint lib/main.dart"
-            else
+            if [ ! -f "${{ env.APP_DIR }}/lib/main.dart" ]; then
               echo "ERROR: lib/main.dart not found in ${{ env.APP_DIR }}; cannot build app."
               ls -la "${{ env.APP_DIR }}"
               exit 1
             fi
+            TARGET=""
+            echo "Using default entrypoint lib/main.dart"
           fi
+
           echo "TARGET=$TARGET" >> "$GITHUB_ENV"
 
       - name: Build release APK (arm64)
