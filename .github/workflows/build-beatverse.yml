@@ -1,8 +1,5 @@
-
 name: Build BeatVerse APK
 
-# Upload BeatVerse-source.zip to the repo root -> this runs automatically.
-# You can also run it manually: Actions tab -> Build BeatVerse APK -> Run workflow.
 on:
   push:
     paths:
@@ -10,9 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       flutter_version:
-        description: "Flutter version (try 3.35.7, if it fails try 3.32.8)"
+        description: "Flutter version (try 3.35.7)"
         default: "3.35.7"
         required: true
+      entrypoint:
+        description: "Optional: relative path to entrypoint Dart file inside chosen project (e.g. lib/main_dev.dart)"
+        required: false
+        default: ""
 
 jobs:
   build:
@@ -21,13 +22,67 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract source zip
+      - name: Extract source zip and choose app directory
         run: |
+          set -euo pipefail
           unzip -q BeatVerse-source.zip -d src
-          PUB=$(find src -maxdepth 3 -name pubspec.yaml | head -1)
-          test -n "$PUB" || { echo "pubspec.yaml not found in zip"; exit 1; }
-          echo "APP_DIR=$(dirname "$PUB")" >> "$GITHUB_ENV"
-          echo "Project root: $(dirname "$PUB")"
+
+          echo "=== Quick repo preview (top-level under src) ==="
+          find src -maxdepth 3 -type d -print | sed -n '1,200p' || true
+
+          # Find all pubspecs
+          mapfile -t PUBS < <(find src -maxdepth 6 -name pubspec.yaml || true)
+          test ${#PUBS[@]} -gt 0 || { echo "pubspec.yaml not found in zip"; exit 1; }
+
+          echo "Found pubspecs:"
+          for p in "${PUBS[@]}"; do echo " - $p"; done
+
+          echo "Searching for candidate main.dart files..."
+          mapfile -t MAINS < <(find src -maxdepth 6 -type f -name 'main*.dart' || true)
+          for m in "${MAINS[@]}"; do echo " - $m"; done
+
+          # Prefer explicit entrypoint if provided via workflow_dispatch
+          ENTRYPOINT="${{ github.event.inputs.entrypoint }}"
+
+          CHOSEN=""
+          for PUB in "${PUBS[@]}"; do
+            DIR=$(dirname "$PUB")
+
+            # If user provided entrypoint, check it first inside this project
+            if [ -n "$ENTRYPOINT" ]; then
+              if [ -f "$DIR/$ENTRYPOINT" ]; then
+                CHOSEN="$DIR"
+                echo "Choosing project $DIR because it contains the requested entrypoint $ENTRYPOINT"
+                break
+              fi
+            fi
+
+            # Typical Flutter app indicators
+            if [ -f "$DIR/lib/main.dart" ] || [ -d "$DIR/android" ] || [ -d "$DIR/ios" ]; then
+              CHOSEN="$DIR"
+              echo "Choosing project $DIR (contains lib/main.dart or android/ios folder)"
+              break
+            fi
+
+            # Some repos put runnable app under example/
+            if [ -f "$DIR/example/lib/main.dart" ] || [ -d "$DIR/example/android" ]; then
+              CHOSEN="$DIR/example"
+              echo "Choosing example project $CHOSEN"
+              break
+            fi
+          done
+
+          if [ -z "$CHOSEN" ]; then
+            echo "No obvious Flutter app found in any pubspec; falling back to first pubspec"
+            CHOSEN=$(dirname "${PUBS[0]}")
+          fi
+
+          echo "APP_DIR=$CHOSEN" >> "$GITHUB_ENV"
+          echo "ENTRYPOINT=$ENTRYPOINT" >> "$GITHUB_ENV"
+          echo "Project root chosen: $CHOSEN"
+          echo "Listing chosen project files:"
+          ls -la "$CHOSEN" || true
+          if command -v tree >/dev/null 2>&1; then tree -a "$CHOSEN" | sed -n '1,200p'; fi
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -48,9 +103,35 @@ jobs:
           flutter --version
           flutter pub get
 
+      - name: Pre-build checks
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          # If user specified an entrypoint, ensure it exists relative to APP_DIR
+          if [ -n "${{ env.ENTRYPOINT }}" ]; then
+            if [ ! -f "${{ env.APP_DIR }}/${{ env.ENTRYPOINT }}" ]; then
+              echo "ERROR: Requested entrypoint '${{ env.ENTRYPOINT }}' not found in ${{ env.APP_DIR }}"
+              ls -la "${{ env.APP_DIR }}"
+              exit 1
+            fi
+            echo "Using custom entrypoint: ${{ env.ENTRYPOINT }}"
+            TARGET="--target ${{ env.ENTRYPOINT }}"
+          else
+            # default entrypoint must exist
+            if [ -f "${{ env.APP_DIR }}/lib/main.dart" ]; then
+              TARGET=""
+              echo "Using default entrypoint lib/main.dart"
+            else
+              echo "ERROR: lib/main.dart not found in ${{ env.APP_DIR }}; cannot build app."
+              ls -la "${{ env.APP_DIR }}"
+              exit 1
+            fi
+          fi
+          echo "TARGET=$TARGET" >> "$GITHUB_ENV"
+
       - name: Build release APK (arm64)
         working-directory: ${{ env.APP_DIR }}
-        run: flutter build apk --release --target-platform android-arm64
+        run: flutter build apk --release ${{ env.TARGET }} --target-platform android-arm64
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
