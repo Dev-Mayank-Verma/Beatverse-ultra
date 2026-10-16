@@ -1,0 +1,81 @@
+name: Build BeatVerse APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Branch/tag of Hivefy to build (leave as main unless it fails)"
+        default: "main"
+        required: true
+
+env:
+  UPSTREAM_REPO: https://github.com/Harish-Srinivas-07/hivefy.git
+  APP_NAME: BeatVerse
+  APP_ID: com.beatverse.app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Clone upstream (Hivefy)
+        run: |
+          git clone --depth 1 --branch "${{ github.event.inputs.source_ref }}" "$UPSTREAM_REPO" app
+          ls app
+
+      - name: Rebrand to BeatVerse
+        working-directory: app
+        run: |
+          grep -rIl "Hivefy" . --exclude-dir=.git --exclude-dir=build --exclude=LICENSE* \
+            | xargs -r sed -i "s/Hivefy/${APP_NAME}/g"
+
+          for f in android/app/build.gradle android/app/build.gradle.kts; do
+            [ -f "$f" ] || continue
+            sed -i -E "s/applicationId\s*=?\s*[\"'][^\"']+[\"']/applicationId = \"${APP_ID}\"/" "$f"
+            case "$f" in *.gradle) sed -i "s/applicationId = \"/applicationId \"/" "$f";; esac
+          done
+
+          sed -i -E "s/android:label=\"[^\"]*\"/android:label=\"${APP_NAME}\"/" android/app/src/main/AndroidManifest.xml
+
+          printf '\n\n---\n%s is a modified version of Hivefy by Harish-Srinivas-07, licensed under GPL-3.0. Source: %s\n' \
+            "${APP_NAME}" "${UPSTREAM_REPO%.git}" >> README.md
+
+          grep -rn "applicationId" android/app/build.gradle* || true
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: app
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build release APK
+        working-directory: app
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeatVerse-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+      - name: Upload full source (rebranded) as zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeatVerse-source
+          path: |
+            app
+            !app/.git
+            !app/build
