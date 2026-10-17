@@ -13,6 +13,9 @@ on:
         default: "3.35.7"
         required: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -60,3 +63,13 @@ jobs:
           name: BeatVerse-apk
           path: ${{ env.APP_DIR }}/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+
+      - name: Publish APK to Releases (direct download, no zip)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "${{ env.APP_DIR }}/build/app/outputs/flutter-apk/app-release.apk" BeatVerse.apk
+          gh release create "build-${{ github.run_number }}" BeatVerse.apk \
+            --repo "${{ github.repository }}" \
+            --title "BeatVerse build ${{ github.run_number }}" \
+            --notes "Install BeatVerse.apk on your phone."
