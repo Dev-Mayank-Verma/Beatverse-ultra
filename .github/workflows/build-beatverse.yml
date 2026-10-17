@@ -1,5 +1,7 @@
 name: Build BeatVerse APK
 
+# Upload BeatVerse-source.zip to the repo root -> this runs automatically.
+# You can also run it manually: Actions tab -> Build BeatVerse APK -> Run workflow.
 on:
   push:
     paths:
@@ -7,13 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       flutter_version:
-        description: "Flutter version (try 3.35.7)"
+        description: "Flutter version (try 3.35.7, if it fails try 3.32.8)"
         default: "3.35.7"
         required: true
-      entrypoint:
-        description: "Optional: relative path to entrypoint Dart file inside chosen project (e.g. lib/main_dev.dart)"
-        required: false
-        default: ""
 
 jobs:
   build:
@@ -22,96 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract source zip and choose app directory
-        shell: bash
+      - name: Extract source zip
         run: |
-          set -euo pipefail
-
-          rm -rf src
           unzip -q BeatVerse-source.zip -d src
-
-          echo "=== Repo preview ==="
-          find src -maxdepth 6 -type d -print | sed -n '1,300p' || true
-
-          # collect pubspec.yaml paths robustly and strip CRLF
-          mapfile -t PUBS < <(find src -type f -name pubspec.yaml -print0 2>/dev/null | xargs -0 -n1 printf '%s\n' | sed 's/\r$//')
-
-          if [ ${#PUBS[@]} -eq 0 ]; then
-            echo "pubspec.yaml not found in zip"
-            exit 1
-          fi
-
-          echo "Found pubspecs:"
-          for p in "${PUBS[@]}"; do echo " - $p"; done
-
-          ENTRYPOINT="${{ github.event.inputs.entrypoint || '' }}"
-          CANDIDATES=()
-
-          for PUB in "${PUBS[@]}"; do
-            DIR="$(dirname "$PUB")"
-            DIR="$(echo "$DIR" | sed 's/\r$//')"
-
-            # canonicalize; -m tolerates odd paths but produces a sane path
-            DIR_CANON="$(realpath -m "$DIR" 2>/dev/null || true)"
-            if [ -z "$DIR_CANON" ]; then
-              DIR_CANON="$DIR"
-            fi
-
-            if [ ! -d "$DIR_CANON" ]; then
-              echo "Skipping pubspec at '$PUB' because directory does not exist: '$DIR_CANON'"
-              continue
-            fi
-
-            if [ -n "$ENTRYPOINT" ] && [ -f "$DIR_CANON/$ENTRYPOINT" ]; then
-              CANDIDATES+=("$DIR_CANON")
-              continue
-            fi
-
-            if [ -f "$DIR_CANON/lib/main.dart" ] || [ -d "$DIR_CANON/android" ] || [ -d "$DIR_CANON/ios" ]; then
-              CANDIDATES+=("$DIR_CANON")
-            else
-              echo "Skipping '$DIR_CANON': no lib/main.dart and no android/ios directory"
-            fi
-          done
-
-          if [ ${#CANDIDATES[@]} -eq 0 ]; then
-            echo "No valid Flutter app directory found in zip."
-            echo "Available pubspecs:"
-            for p in "${PUBS[@]}"; do echo " - $p"; done
-            echo "Repo tree (top-level):"
-            find src -maxdepth 3 -print | sed -n '1,200p' || true
-            exit 1
-          fi
-
-          CHOSEN=""
-          if [ -n "$ENTRYPOINT" ]; then
-            for DIR in "${CANDIDATES[@]}"; do
-              if [ -f "$DIR/$ENTRYPOINT" ]; then
-                CHOSEN="$DIR"
-                break
-              fi
-            done
-          fi
-
-          if [ -z "$CHOSEN" ]; then
-            CHOSEN="${CANDIDATES[0]}"
-          fi
-
-          if [ ! -d "$CHOSEN" ]; then
-            echo "Selected app directory does not exist: $CHOSEN"
-            echo "Candidates were:"
-            for c in "${CANDIDATES[@]}"; do echo " - $c"; done
-            exit 1
-          fi
-
-          echo "APP_DIR=$CHOSEN" >> "$GITHUB_ENV"
-          echo "ENTRYPOINT=$ENTRYPOINT" >> "$GITHUB_ENV"
-          echo "Project root chosen: $CHOSEN"
-
-          ls -la "$CHOSEN"
-          if command -v tree >/dev/null 2>&1; then
-            tree -a "$CHOSEN" | sed -n '1,200p'
-          fi
+          PUB=$(find src -maxdepth 3 -name pubspec.yaml | head -1)
+          test -n "$PUB" || { echo "pubspec.yaml not found in zip"; exit 1; }
+          echo "APP_DIR=$(dirname "$PUB")" >> "$GITHUB_ENV"
+          echo "Project root: $(dirname "$PUB")"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -132,39 +47,9 @@ jobs:
           flutter --version
           flutter pub get
 
-      - name: Pre-build checks
-        working-directory: ${{ env.APP_DIR }}
-        run: |
-          set -euo pipefail
-
-          if [ ! -d "${{ env.APP_DIR }}" ]; then
-            echo "APP_DIR is invalid: ${{ env.APP_DIR }}"
-            exit 1
-          fi
-
-          if [ -n "${{ env.ENTRYPOINT }}" ]; then
-            if [ ! -f "${{ env.APP_DIR }}/${{ env.ENTRYPOINT }}" ]; then
-              echo "ERROR: Requested entrypoint '${{ env.ENTRYPOINT }}' not found in ${{ env.APP_DIR }}"
-              ls -la "${{ env.APP_DIR }}"
-              exit 1
-            fi
-            echo "Using custom entrypoint: ${{ env.ENTRYPOINT }}"
-            TARGET="--target ${{ env.ENTRYPOINT }}"
-          else
-            if [ ! -f "${{ env.APP_DIR }}/lib/main.dart" ]; then
-              echo "ERROR: lib/main.dart not found in ${{ env.APP_DIR }}; cannot build app."
-              ls -la "${{ env.APP_DIR }}"
-              exit 1
-            fi
-            TARGET=""
-            echo "Using default entrypoint lib/main.dart"
-          fi
-
-          echo "TARGET=$TARGET" >> "$GITHUB_ENV"
-
       - name: Build release APK (arm64)
         working-directory: ${{ env.APP_DIR }}
-        run: flutter build apk --release ${{ env.TARGET }} --target-platform android-arm64
+        run: flutter build apk --release --target-platform android-arm64
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
